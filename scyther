@@ -1,0 +1,36 @@
+const pk: Function;
+secret sk: Function;
+inversekeys (pk,sk);//The protocol description
+protocol noname(I,R)
+{
+role I
+{
+const ni: Nonce;
+var nr : Nonce;
+send_1(I,R，{L,ni}pk(R));
+read_2(R,I，{ni,nr}pkI));
+send_3(I,R,{nr}pk(R));
+
+claim_i1(I,Secret,ni);
+claim_i2(I,Secret,nr );
+claim_i3(I,Niagree);
+claim_i4(I,Nisynch);
+}
+role R
+{
+var ni: Nonce;
+const nr : Nonce;
+read_1(I,R,L,ni}pk(R);
+send_z(R,I ihi,nr}pkI );
+read_3(I,R,inr}pk(R) );
+
+claim_r1(R,Secret,ni);
+claim_r2(R,Secret,nr );
+claim_r3(R,Niagree);
+claim_r4(R,Nisynch);
+}
+}
+
+const Eve: Agent;
+untrusted Eve;
+compromised sk(Eve);
