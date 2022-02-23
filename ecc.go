@@ -72,7 +72,7 @@ func (p *pbft) handleClientRequest(content []byte) {
 	//获取消息摘要
 	digest := getDigest(*r)
 	fmt.Println("已将request存入临时消息池")
-	//存入临时消息池
+	
 	p.messagePool[digest] = *r
 	//主节点对消息摘要进行签名
 	digestByte, _ := hex.DecodeString(digest)
@@ -84,15 +84,15 @@ func (p *pbft) handleClientRequest(content []byte) {
 		log.Panic(err)
 	}
 	fmt.Println("正在向其他节点进行进行PrePrepare广播 ...")
-	//进行PrePrepare广播
+
 	p.broadcast(cPrePrepare, b)
 	fmt.Println("PrePrepare广播完成")
 }
 
-//处理预准备消息
+
 func (p *pbft) handlePrePrepare(content []byte) {
 	fmt.Println("本节点已接收到主节点发来的PrePrepare ...")
-	//	//使用json解析出PrePrepare结构体
+	
 	pp := new(PrePrepare)
 	err := json.Unmarshal(content, pp)
 	if err != nil {
@@ -128,7 +128,7 @@ func (p *pbft) handlePrePrepare(content []byte) {
 	}
 }
 
-//处理准备消息
+
 func (p *pbft) handlePrepare(content []byte) {
 	//使用json解析出Prepare结构体
 	pre := new(Prepare)
@@ -171,7 +171,7 @@ func (p *pbft) handlePrepare(content []byte) {
 			if err != nil {
 				log.Panic(err)
 			}
-			//进行提交信息的广播
+			
 			fmt.Println("正在进行commit广播")
 			p.broadcast(cCommit, bc)
 			p.isCommitBordcast[pre.Digest] = true
