@@ -1,183 +1,654 @@
+
+
 package main
 
 import (
-	"crypto/elliptic"
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
+	"hash"
+	"io"
 	"math/big"
-	"time"
+
+	"github.com/hyperledger/fabric/core/chaincode/shim"
+	pb "github.com/hyperledger/fabric/protos/peer"
+	"golang.org/x/crypto/bn256"
 )
-var curve01=elliptic.P256()
-var params3=curve01.Params()
-func test(ab *big.Int,ac *big.Int)(x,y *big.Int){
-	fmt.Println(params3.IsOnCurve(ab,ac))
-	d,e:=params3.Add(ab,ac,params3.Gx,params3.Gy)
-	for i:=1;i<=1000000;i++{
-ab,ac:=params3.Add(ab,ac,d,e)
-//print
-		//fmt.Println("hello",params3.IsOnCurve(ab,ac))
-//if i==50{
-	//fmt.Printf ("第五十次椭圆曲线点加操作的X和Y的值%v，%v",ab,ac)
 
-if i!=1000000{
-	continue
-}else{
-return ab,ac
+// SignatureSize is the size, in bytes, of the signatures produced by this
+// package. (3072 bits.)
+const SignatureSize = 12 * 32
+
+// Group represents a public key in the group signature scheme. Signatures by
+// the group members can be verified given the Group.//Group 表示群签名方案中的公钥。签名人
+//// 给定组可以验证组成员
+type  Group struct {
+	g1, h, u, v           *bn256.G1
+	g2, w                 *bn256.G2
+	ehw, ehg2, minusEg1g2 *bn256.GT
 }
 
-	}
-return
-}
-func main(){
-
-
-	a:=params3.B
-	b:=params3.P
-	c:=params3.N
-	d:=params3.Gx//基点x的坐标
-	e:=params3.Gy//基点y坐标
-
-	fmt.Printf("%v,%v,%v \n",a,b,c)
-	fmt.Printf("%v,%v\n",d,e)
-res:=params3.IsOnCurve(d,e)
-fmt.Println(res)
-addresx,addresy:=params3.Add(d,e,d,e)
-res2:=params3.IsOnCurve(addresx,addresy)
-fmt.Println(res2)
-	fmt.Printf("%v,%v\n",*addresx,*addresy)
-
-	start:=time.Now()
-	ad,ac:=test(d,e)
-	fmt.Printf("%v,%v",ad,ac)
-/*for i:=0;i<=1000;i++{
-	//getrandom,_:=rand.Int(rand.Reader,*b)
-d,e:=params3.Add(*d,*e,*d,*e)
-	fmt.Printf("%d",*d,*e)
-
-
-
-	}*/
-	end:=time.Since(start)
-	fmt.Printf("abv%v",end )
-}
-func (p *pbft) handleClientRequest(content []byte) {
-	fmt.Println("主节点已接收到客户端发来的request ...")
-	//使用json解析出Request结构体
-	r := new(Request)
-	err := json.Unmarshal(content, r)
-	if err != nil {
-		log.Panic(err)
-	}
-	//添加信息序号
-	p.sequenceIDAdd()
-	//获取消息摘要
-	digest := getDigest(*r)
-	fmt.Println("已将request存入临时消息池")
-	
-	p.messagePool[digest] = *r
-	//主节点对消息摘要进行签名
-	digestByte, _ := hex.DecodeString(digest)
-	signInfo := p.RsaSignWithSha256(digestByte, p.node.rsaPrivKey)
-	//拼接成PrePrepare，准备发往follower节点
-	pp := PrePrepare{*r, digest, p.sequenceID, signInfo}
-	b, err := json.Marshal(pp)
-	if err != nil {
-		log.Panic(err)
-	}
-	fmt.Println("正在向其他节点进行进行PrePrepare广播 ...")
-
-	p.broadcast(cPrePrepare, b)
-	fmt.Println("PrePrepare广播完成")
+// Marshal serializes g to a slice of bytes, suitable for Unmarshal.//Marshal 将 g 序列化为一片字节，适用于 Unmarshal。
+func (g *Group) Marshal() []byte {
+	out := make([]byte, 0, 4*2*32+2*2*2*32)
+	out = append(out, g.g1.Marshal()...)
+	out = append(out, g.h.Marshal()...)
+	out = append(out, g.u.Marshal()...)
+	out = append(out, g.v.Marshal()...)
+	out = append(out, g.g2.Marshal()...)
+	out = append(out, g.w.Marshal()...)
+	return out
 }
 
-
-func (p *pbft) handlePrePrepare(content []byte) {
-	fmt.Println("本节点已接收到主节点发来的PrePrepare ...")
-	
-	pp := new(PrePrepare)
-	err := json.Unmarshal(content, pp)
-	if err != nil {
-		log.Panic(err)
+// Unmarshal sets g to the result of unmarshaling b and returns both g and a
+// bool that is true on success. Since Group contains some precomputed values
+// that aren't included in the serialisation, Unmarshal does significant
+// computation.
+func (g *Group) Unmarshal(b []byte) (*Group, bool) {
+	if len(b) != 4*2*32+2*2*2*32 {
+		return nil, false
 	}
-	//获取主节点的公钥，用于数字签名验证
-	primaryNodePubKey := p.getPubKey("N0")
-	digestByte, _ := hex.DecodeString(pp.Digest)
-	if digest := getDigest(pp.RequestMessage); digest != pp.Digest {
-		fmt.Println("信息摘要对不上，拒绝进行prepare广播")
-	} else if p.sequenceID+1 != pp.SequenceID {
-		fmt.Println("消息序号对不上，拒绝进行prepare广播")
-	} else if !p.RsaVerySignWithSha256(digestByte, pp.Sign, primaryNodePubKey) {
-		fmt.Println("主节点签名验证失败！,拒绝进行prepare广播")
-	} else {
-		//序号赋值
-		p.sequenceID = pp.SequenceID
-		//将信息存入临时消息池
-		fmt.Println("已将消息存入临时节点池")
-		p.messagePool[pp.Digest] = pp.RequestMessage
-		//节点使用私钥对其签名
-		sign := p.RsaSignWithSha256(digestByte, p.node.rsaPrivKey)
-		//拼接成Prepare
-		pre := Prepare{pp.Digest, pp.SequenceID, p.node.nodeID, sign}
-		bPre, err := json.Marshal(pre)
+	var ok bool
+	if g.g1, ok = new(bn256.G1).Unmarshal(b[0*2*32 : 1*2*32]); !ok {
+		return nil, false
+	}
+	if g.h, ok = new(bn256.G1).Unmarshal(b[1*2*32 : 2*2*32]); !ok {
+		return nil, false
+	}
+	if g.u, ok = new(bn256.G1).Unmarshal(b[2*2*32 : 3*2*32]); !ok {
+		return nil, false
+	}
+	if g.v, ok = new(bn256.G1).Unmarshal(b[3*2*32 : 4*2*32]); !ok {
+		return nil, false
+	}
+
+	b = b[4*2*32:]
+	if g.g2, ok = new(bn256.G2).Unmarshal(b[0*2*2*32 : 1*2*2*32]); !ok {
+		return nil, false
+	}
+	if g.w, ok = new(bn256.G2).Unmarshal(b[1*2*2*32 : 2*2*2*32]); !ok {
+		return nil, false
+	}
+
+	g.precompute()
+	return g, true
+}
+
+func (g *Group) precompute() {
+	g.ehw = bn256.Pair(g.h, g.w)
+	g.ehg2 = bn256.Pair(g.h, g.g2)
+
+	t := bn256.Pair(g.g1, g.g2)
+	g.minusEg1g2 = new(bn256.GT).Neg(t)
+}
+
+// PrivateKey represents a group private key. The holder of the private key can
+// create new group members and can reveal which member created a given
+// signature.
+type PrivateKey struct {
+	*Group
+	xi1, xi2 *big.Int
+	gamma    *big.Int
+}
+
+// Marshal serializes priv to a slice of bytes, suitable for Unmarshal.
+func (priv *PrivateKey) Marshal() []byte {
+	out := make([]byte, 0, 3*32)
+	out = appendN(out, priv.xi1)
+	out = appendN(out, priv.xi2)
+	out = appendN(out, priv.gamma)
+	return out
+}
+
+// Unmarshal sets priv to the result of unmarshaling b and returns both priv
+// and a bool that is true on success.
+func (priv *PrivateKey) Unmarshal(g *Group, b []byte) (*PrivateKey, bool) {
+	if len(b) != 3*32 {
+		return nil, false
+	}
+
+	priv.Group = g
+	priv.xi1 = new(big.Int).SetBytes(b[0*32 : 1*32])
+	priv.xi2 = new(big.Int).SetBytes(b[1*32 : 2*32])
+	priv.gamma = new(big.Int).SetBytes(b[2*32 : 3*32])
+
+	return priv, true
+}
+
+// MemberKey represents a member private key. It is capable of signing messages
+// such that nobody, save the holder of the group private key, can determine
+// which member of the group made the signature.
+type MemberKey struct {
+	*Group
+	x *big.Int
+	a *bn256.G1
+}
+
+// Tag returns an opaque byte slice that identifies the member private key for
+// the purposes of comparing against the result of Open.
+func (mem *MemberKey) Tag() []byte {
+	return mem.a.Marshal()
+}
+
+// Marshal serializes mem to a slice of bytes, suitable for Unmarshal.
+func (mem *MemberKey) Marshal() []byte {
+	out := make([]byte, 0, 3*32)
+	out = appendN(out, mem.x)
+	out = append(out, mem.a.Marshal()...)
+	return out
+}
+
+// Unmarshal sets mem to the result of unmarshaling b and returns both mem and
+// a bool that is true on success.
+func (mem *MemberKey) Unmarshal(g *Group, b []byte) (*MemberKey, bool) {
+	if len(b) != 3*32 {
+		return nil, false
+	}
+
+	var ok bool
+	mem.Group = g
+	mem.x = new(big.Int).SetBytes(b[0*32 : 1*32])
+	if mem.a, ok = new(bn256.G1).Unmarshal(b[1*32:]); !ok {
+		return nil, false
+	}
+
+	return mem, true
+}
+
+func randomZp(r io.Reader) (*big.Int, error) {
+	for {
+		n, err := rand.Int(r, bn256.Order)
 		if err != nil {
-			log.Panic(err)
+			return nil, err
 		}
-		//进行准备阶段的广播
-		fmt.Println("正在进行Prepare广播 ...")
-		p.broadcast(cPrepare, bPre)
-		fmt.Println("Prepare广播完成")
+		if n.Sign() > 0 {
+			return n, nil
+		}
 	}
+
+	panic("unreachable")
 }
 
+// GenerateGroup generates a new group and group private key.
+func GenerateGroup(r io.Reader) (*PrivateKey, error) {
+	priv := new(PrivateKey)
+	priv.Group = new(Group)
+	var err error
 
-func (p *pbft) handlePrepare(content []byte) {
-	//使用json解析出Prepare结构体
-	pre := new(Prepare)
-	err := json.Unmarshal(content, pre)
+	if _, priv.g1, err = bn256.RandomG1(r); err != nil {
+		return nil, err
+	}
+	if _, priv.g2, err = bn256.RandomG2(r); err != nil {
+		return nil, err
+	}
+	if _, priv.h, err = bn256.RandomG1(r); err != nil {
+		return nil, err
+	}
+	if priv.xi1, err = randomZp(r); err != nil {
+		return nil, err
+	}
+	if priv.xi2, err = randomZp(r); err != nil {
+		return nil, err
+	}
+
+	z0 := new(big.Int).ModInverse(priv.xi1, bn256.Order)
+	priv.u = new(bn256.G1).ScalarMult(priv.h, z0)
+
+	z0.ModInverse(priv.xi2, bn256.Order)
+	priv.v = new(bn256.G1).ScalarMult(priv.h, z0)
+
+	priv.gamma, err = randomZp(r)
 	if err != nil {
-		log.Panic(err)
+		return nil, err
 	}
-	fmt.Printf("本节点已接收到%s节点发来的Prepare ... \n", pre.NodeID)
-	//获取消息源节点的公钥，用于数字签名验证
-	MessageNodePubKey := p.getPubKey(pre.NodeID)
-	digestByte, _ := hex.DecodeString(pre.Digest)
-	if _, ok := p.messagePool[pre.Digest]; !ok {
-		fmt.Println("当前临时消息池无此摘要，拒绝执行commit广播")
-	} else if p.sequenceID != pre.SequenceID {
-		fmt.Println("消息序号对不上，拒绝执行commit广播")
-	} else if !p.RsaVerySignWithSha256(digestByte, pre.Sign, MessageNodePubKey) {
-		fmt.Println("节点签名验证失败！,拒绝执行commit广播")
-	} else {
-		p.setPrePareConfirmMap(pre.Digest, pre.NodeID, true)
-		count := 0
-		for range p.prePareConfirmCount[pre.Digest] {
-			count++
-		}
-		//因为主节点不会发送Prepare，所以不包含自己
-		specifiedCount := 0
-		if p.node.nodeID == "N0" {
-			specifiedCount = nodeCount / 3 * 2
-		} else {
-			specifiedCount = (nodeCount / 3 * 2) - 1
-		}
-		//如果节点至少收到了2f个prepare的消息（包括自己）,并且没有进行过commit广播，则进行commit广播
-		p.lock.Lock()
-		//获取消息源节点的公钥，用于数字签名验证
-		if count >= specifiedCount && !p.isCommitBordcast[pre.Digest] {
-			fmt.Println("本节点已收到至少2f个节点(包括本地节点)发来的Prepare信息 ...")
-			//节点使用私钥对其签名
-			sign := p.RsaSignWithSha256(digestByte, p.node.rsaPrivKey)
-			c := Commit{pre.Digest, pre.SequenceID, p.node.nodeID, sign}
-			bc, err := json.Marshal(c)
-			if err != nil {
-				log.Panic(err)
-			}
-			
-			fmt.Println("正在进行commit广播")
-			p.broadcast(cCommit, bc)
-			p.isCommitBordcast[pre.Digest] = true
-			fmt.Println("commit广播完成")
-		}
-		p.lock.Unlock()
-	}
+	priv.w = new(bn256.G2).ScalarMult(priv.g2, priv.gamma)
+	priv.precompute()
+
+	return priv, nil
 }
+
+// NewMember creates a new member private key for the group.
+func (priv *PrivateKey) NewMember(r io.Reader) (*MemberKey, error) {
+	mem := new(MemberKey)
+	var err error
+
+	mem.Group = priv.Group
+	mem.x, err = randomZp(r)
+	if err != nil {
+		return nil, err
+	}
+
+	s := new(big.Int).Add(priv.gamma, mem.x)
+	s.ModInverse(s, bn256.Order)
+	mem.a = new(bn256.G1).ScalarMult(priv.g1, s)
+
+	return mem, nil
+}
+
+// Sign computes a group signature of digest using the given hash function.
+func (mem *MemberKey) Sign(r io.Reader, digest []byte, hashFunc hash.Hash) ([]byte, error) {
+	var rnds [7]*big.Int
+	for i := range rnds {
+		var err error
+		rnds[i], err = randomZp(r)
+		if err != nil {
+			return nil, err
+		}
+	}
+	alpha := rnds[0]
+	beta := rnds[1]
+
+	t1 := new(bn256.G1).ScalarMult(mem.u, alpha)
+	t2 := new(bn256.G1).ScalarMult(mem.v, beta)
+
+	tmp := new(big.Int).Add(alpha, beta)
+	t3 := new(bn256.G1).ScalarMult(mem.h, tmp)
+	t3.Add(t3, mem.a)
+
+	delta1 := new(big.Int).Mul(mem.x, alpha)
+	delta1.Mod(delta1, bn256.Order)
+	delta2 := new(big.Int).Mul(mem.x, beta)
+	delta2.Mod(delta2, bn256.Order)
+
+	ralpha := rnds[2]
+	rbeta := rnds[3]
+	rx := rnds[4]
+	rdelta1 := rnds[5]
+	rdelta2 := rnds[6]
+
+	r1 := new(bn256.G1).ScalarMult(mem.u, ralpha)
+	r2 := new(bn256.G1).ScalarMult(mem.v, rbeta)
+
+	r3 := bn256.Pair(t3, mem.g2)
+	r3.ScalarMult(r3, rx)
+
+	tmp.Neg(ralpha)
+	tmp.Sub(tmp, rbeta)
+	tmp.Mod(tmp, bn256.Order)
+	tmpgt := new(bn256.GT).ScalarMult(mem.ehw, tmp)
+	r3.Add(r3, tmpgt)
+
+	tmp.Neg(rdelta1)
+	tmp.Sub(tmp, rdelta2)
+	tmp.Mod(tmp, bn256.Order)
+	tmpgt.ScalarMult(mem.ehg2, tmp)
+	r3.Add(r3, tmpgt)
+
+	r4 := new(bn256.G1).ScalarMult(t1, rx)
+	tmp.Neg(rdelta1)
+	tmp.Add(tmp, bn256.Order)
+	tmpg := new(bn256.G1).ScalarMult(mem.u, tmp)
+	r4.Add(r4, tmpg)
+
+	r5 := new(bn256.G1).ScalarMult(t2, rx)
+	tmp.Neg(rdelta2)
+	tmp.Add(tmp, bn256.Order)
+	tmpg.ScalarMult(mem.v, tmp)
+	r5.Add(r5, tmpg)
+
+	t1Bytes := t1.Marshal()
+	t2Bytes := t2.Marshal()
+	t3Bytes := t3.Marshal()
+
+	hashFunc.Reset()
+	hashFunc.Write(digest)
+	hashFunc.Write(t1Bytes)
+	hashFunc.Write(t2Bytes)
+	hashFunc.Write(t3Bytes)
+	hashFunc.Write(r1.Marshal())
+	hashFunc.Write(r2.Marshal())
+	hashFunc.Write(r3.Marshal())
+	hashFunc.Write(r4.Marshal())
+	hashFunc.Write(r5.Marshal())
+	c := new(big.Int).SetBytes(hashFunc.Sum(nil))
+	c.Mod(c, bn256.Order)
+
+	salpha := new(big.Int).Mul(c, alpha)
+	salpha.Add(salpha, ralpha)
+	salpha.Mod(salpha, bn256.Order)
+
+	sbeta := new(big.Int).Mul(c, beta)
+	sbeta.Add(sbeta, rbeta)
+	sbeta.Mod(sbeta, bn256.Order)
+
+	sx := new(big.Int).Mul(c, mem.x)
+	sx.Add(sx, rx)
+	sx.Mod(sx, bn256.Order)
+
+	sdelta1 := new(big.Int).Mul(c, delta1)
+	sdelta1.Add(sdelta1, rdelta1)
+	sdelta1.Mod(sdelta1, bn256.Order)
+
+	sdelta2 := new(big.Int).Mul(c, delta2)
+	sdelta2.Add(sdelta2, rdelta2)
+	sdelta2.Mod(sdelta2, bn256.Order)
+
+	sig := make([]byte, 0, SignatureSize)
+	sig = append(sig, t1Bytes...)
+	sig = append(sig, t2Bytes...)
+	sig = append(sig, t3Bytes...)
+	sig = appendN(sig, c)
+	sig = appendN(sig, salpha)
+	sig = appendN(sig, sbeta)
+	sig = appendN(sig, sx)
+	sig = appendN(sig, sdelta1)
+	sig = appendN(sig, sdelta2)
+
+	return sig, nil
+}
+
+// Verify verifies that sig is a valid signature of digest using the given hash
+// function.
+func (g *Group) Verify(digest []byte, hashFunc hash.Hash, sig []byte) bool {
+	if len(sig) != SignatureSize {
+		return false
+	}
+
+	t1, ok := new(bn256.G1).Unmarshal(sig[:2*32])
+	if !ok {
+		return false
+	}
+	t2, ok := new(bn256.G1).Unmarshal(sig[2*32 : 4*32])
+	if !ok {
+		return false
+	}
+	t3, ok := new(bn256.G1).Unmarshal(sig[4*32 : 6*32])
+	if !ok {
+		return false
+	}
+	c := new(big.Int).SetBytes(sig[6*32 : 7*32])
+	salpha := new(big.Int).SetBytes(sig[7*32 : 8*32])
+	sbeta := new(big.Int).SetBytes(sig[8*32 : 9*32])
+	sx := new(big.Int).SetBytes(sig[9*32 : 10*32])
+	sdelta1 := new(big.Int).SetBytes(sig[10*32 : 11*32])
+	sdelta2 := new(big.Int).SetBytes(sig[11*32 : 12*32])
+
+	r1 := new(bn256.G1).ScalarMult(g.u, salpha)
+	tmp := new(big.Int).Neg(c)
+	tmp.Add(tmp, bn256.Order)
+	tmpg := new(bn256.G1).ScalarMult(t1, tmp)
+	r1.Add(r1, tmpg)
+
+	r2 := new(bn256.G1).ScalarMult(g.v, sbeta)
+	tmpg.ScalarMult(t2, tmp)
+	r2.Add(r2, tmpg)
+
+	r4 := new(bn256.G1).ScalarMult(t1, sx)
+	tmp.Neg(sdelta1)
+	tmp.Add(tmp, bn256.Order)
+	tmpg.ScalarMult(g.u, tmp)
+	r4.Add(r4, tmpg)
+
+	r5 := new(bn256.G1).ScalarMult(t2, sx)
+	tmp.Neg(sdelta2)
+	tmp.Add(tmp, bn256.Order)
+	tmpg.ScalarMult(g.v, tmp)
+	r5.Add(r5, tmpg)
+
+	r3 := bn256.Pair(t3, g.g2)
+	r3.ScalarMult(r3, sx)
+
+	tmp.Neg(salpha)
+	tmp.Sub(tmp, sbeta)
+	tmp.Mod(tmp, bn256.Order)
+	tmpgt := new(bn256.GT).ScalarMult(g.ehw, tmp)
+	r3.Add(r3, tmpgt)
+
+	tmp.Neg(sdelta1)
+	tmp.Sub(tmp, sdelta2)
+	tmp.Mod(tmp, bn256.Order)
+	tmpgt.ScalarMult(g.ehg2, tmp)
+	r3.Add(r3, tmpgt)
+
+	et3w := bn256.Pair(t3, g.w)
+	et3w.Add(et3w, g.minusEg1g2)
+	et3w.ScalarMult(et3w, c)
+	r3.Add(r3, et3w)
+
+	hashFunc.Reset()
+	hashFunc.Write(digest)
+	hashFunc.Write(t1.Marshal())
+	hashFunc.Write(t2.Marshal())
+	hashFunc.Write(t3.Marshal())
+	hashFunc.Write(r1.Marshal())
+	hashFunc.Write(r2.Marshal())
+	hashFunc.Write(r3.Marshal())
+	hashFunc.Write(r4.Marshal())
+	hashFunc.Write(r5.Marshal())
+	cprime := new(big.Int).SetBytes(hashFunc.Sum(nil))
+	cprime.Mod(cprime, bn256.Order)
+
+	return cprime.Cmp(c) == 0
+}
+
+// Open reveals which member private key made the given signature. The return
+// value will match the result of calling Tag on the member private key in
+// question.
+func (priv *PrivateKey) Open(sig []byte) ([]byte, bool) {
+	if len(sig) != 12*32 {
+		return nil, false
+	}
+
+	t1, ok := new(bn256.G1).Unmarshal(sig[:2*32])
+	if !ok {
+		return nil, false
+	}
+	t2, ok := new(bn256.G1).Unmarshal(sig[2*32 : 4*32])
+	if !ok {
+		return nil, false
+	}
+	t3, ok := new(bn256.G1).Unmarshal(sig[4*32 : 6*32])
+	if !ok {
+		return nil, false
+	}
+
+	a := new(bn256.G1).ScalarMult(t1, priv.xi1)
+	b := new(bn256.G1).ScalarMult(t2, priv.xi2)
+	a.Add(a, b)
+	a.Neg(a)
+	a.Add(t3, a)
+
+	return a.Marshal(), true
+}
+
+// Revocation represents a revocation of a member private key. A Revocation can
+// be applied to update a member private key and also to a group to create a
+// new group that does not include the revoked member.
+type Revocation struct {
+	x     *big.Int
+	a     *bn256.G1
+	aStar *bn256.G2
+}
+
+// GenerateRevocation creates a Revocation that revokes the given member
+// private key.
+func (priv *PrivateKey) GenerateRevocation(mem *MemberKey) *Revocation {
+	s := new(big.Int).Add(priv.gamma, mem.x)
+	s.ModInverse(s, bn256.Order)
+	aStar := new(bn256.G2).ScalarMult(priv.g2, s)
+
+	return &Revocation{mem.x, mem.a, aStar}
+}
+
+// Marshal serializes r to a slice of bytes, suitable for Unmarshal.
+func (r *Revocation) Marshal() []byte {
+	ret := make([]byte, 0, 7*32)
+	ret = append(ret, r.a.Marshal()...)
+	ret = appendN(ret, r.x)
+	ret = append(ret, r.aStar.Marshal()...)
+	return ret
+}
+
+func (r *Revocation) Unmarshal(b []byte) (*Revocation, bool) {
+	if len(b) != 7*32 {
+		return nil, false
+	}
+
+	var ok bool
+	r.a, ok = new(bn256.G1).Unmarshal(b[:2*32])
+	if !ok {
+		return nil, false
+	}
+	r.x = new(big.Int).SetBytes(b[2*32 : 3*32])
+	r.aStar, ok = new(bn256.G2).Unmarshal(b[3*32 : 7*32])
+	if !ok {
+		return nil, false
+	}
+	return r, true
+}
+
+// Update alters g to create a new Group that includes all previous members,
+// save a specifically revoked member.
+func (g *Group) Update(r *Revocation) {
+	tmp := new(big.Int).Neg(r.x)
+	tmp.Add(tmp, bn256.Order)
+	t := new(bn256.G2).ScalarMult(r.aStar, tmp)
+	g.w.Add(g.g2, t)
+
+	g.g1 = r.a
+	g.g2 = r.aStar
+
+	g.precompute()
+}
+
+// Update alters mem to create a member private key for an updated Group. (Note
+// that the Group of mem must also be updated.) This functions returns false if
+// mem is the member private key that has been revoked.
+func (mem *MemberKey) Update(r *Revocation) bool {
+	if mem.x.Cmp(r.x) == 0 {
+		return false
+	}
+
+	d := new(big.Int).Sub(mem.x, r.x)
+	d.Mod(d, bn256.Order)
+	d.ModInverse(d, bn256.Order)
+
+	newA := new(bn256.G1).ScalarMult(r.a, d)
+	t := new(bn256.G1).ScalarMult(mem.a, d)
+	t.Neg(t)
+	newA.Add(newA, t)
+
+	mem.a = newA
+	return true
+}
+
+func appendN(b []byte, n *big.Int) []byte {
+	bytes := n.Bytes()
+	if len(bytes) > 32   {
+		panic("bad value passed to appendN")
+	}
+
+	for i := len(bytes); i < 32; i++ {
+		b = append(b, 0)
+	}
+	return append(b, bytes...)
+}
+type SimpleChaincode struct {
+
+}
+//链码的初始化
+func (t *SimpleChaincode)Init(stub shim.ChaincodeStubInterface)pb.Response{
+	args:=stub.GetStringArgs()
+	if len(args)!=2{
+		return shim.Error("参数不正确，需要正确的key值和value值")
+	}
+	err:=stub.PutState(args[0],[]byte(args[1]))
+	if err!=nil{
+		return shim.Error(fmt.Sprintf("不能完成asset：%s",err))
+	}
+	return shim.Success(nil)
+}
+func (t *SimpleChaincode)Invoke(stub shim.ChaincodeStubInterface)pb.Response{
+	fn,args:=stub.GetFunctionAndParameters()
+	var result string
+	var err error
+	if fn == "set"{
+		result,err=set(stub,args)
+	}else{
+		result,err=get(stub,args)
+	}
+	if err!=nil{
+		return shim.Error(err.Error())
+	}
+	return shim.Success([]byte(result))
+}
+func set(stub shim.ChaincodeStubInterface,args []string)(string ,error){
+	if len(args)!=2{
+		return "",fmt.Errorf("参数不正确，希望获取key-Value")
+	}
+	err:=stub.PutState(args[0],[]byte(args[1]))
+	if err !=nil{
+		return "", fmt.Errorf("不能设置asset：%s",args[0])
+	}
+	return args[1],nil
+}
+func get(stub shim.ChaincodeStubInterface,args []string)(string ,error){
+   if len(args) !=1{
+
+   return "",fmt.Errorf("参数错误，没有关键值")
+
+   }
+   value,err:=stub.GetState(args[0])
+   if err !=nil{
+   	return "", fmt.Errorf("不能获取asset：%s",args[0],err)
+   }
+   if value==nil{
+   	return "",fmt.Errorf("asset 没有被发现：%s",args[0])
+   }
+   return string(value),nil
+}
+
+func main(){
+	err:=shim.Start(new(SimpleChaincode))
+	if err!=nil{
+		fmt.Printf("链码错误：%s",err)
+	}
+
+	msg:=[]byte("hello,world")
+	pri,err:=GenerateGroup(rand.Reader)
+	if err!=nil{
+		fmt.Printf("创建群失败：",err)
+	}
+	//签名过程：
+	group:=pri.Group
+	member,err:=pri.NewMember(rand.Reader)//一个新成员加入该群组
+	if err!=nil{
+		fmt.Printf("新成员加入群组失败：%s",err)
+	}
+	h:=sha256.New()
+	h.Write(msg)
+	digest:=h.Sum(nil)
+	ok:=false
+	groupBytes:=group.Marshal()
+	group, ok = new(Group).Unmarshal(groupBytes)
+	if !ok{
+		fmt.Printf("反序列化失败：%s",err)
+	}
+	sig,err:=member.Sign(rand.Reader,digest,h)
+	fmt.Println(sig)
+	if err !=nil{
+		fmt.Printf("签名失败：%s",err)
+	}
+	if !group.Verify(digest,h,sig){
+		fmt.Println("签名不能被认证")
+
+	}
+	//digest[1]^=0x80
+	if group.Verify(digest,h,sig){
+		fmt.Println("签名可以被认证")
+	}
+	//签名打开
+	digest[1] ^=0x80
+	tag,ok:=pri.Open(sig)
+	if !ok{
+		fmt.Println("签名打开失败")
+	}
+	if !bytes.Equal(tag,member.Tag()){
+		fmt.Println("打开的签名的标签不一致")
+	}
+
+
+}
+
 
